@@ -60,6 +60,18 @@ impl Default for Format {
 }
 
 impl Format {
+    pub(crate) fn from_mythroad_byte_stream(byte_stream: &mut ByteStream) -> Result<Self, LunifyError> {
+        Ok(Self {
+            format: 0,
+            endianness: byte_stream.byte()?.try_into()?,
+            integer_width: BitWidth::Bit32,
+            size_t_width: BitWidth::Bit32,
+            instruction_width: BitWidth::Bit32,
+            number_width: BitWidth::Bit32,
+            is_number_integral: true,
+        })
+    }
+
     pub(crate) fn from_byte_stream(byte_stream: &mut ByteStream, version: LuaVersion, settings: &Settings) -> Result<Self, LunifyError> {
         let format = match version {
             LuaVersion::Lua51 => byte_stream.byte()?,
