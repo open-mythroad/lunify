@@ -5,6 +5,17 @@ use super::operand::{A, BC, Bx, Generic, Opcode, SignedBx};
 use super::{ConstantRegister, InstructionLayout, OperandType, Register, Unused};
 use crate::LunifyError;
 
+/// Lua 5.0 byte code dialect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Dialect {
+    /// Standard Lua 5.0 byte code.
+    #[default]
+    Standard,
+    /// Mythroad byte code with the compact `0x80` chunk header.
+    Mythroad,
+}
+
 /// Lua 5.0 compile constants. The Lua interpreter is compiled with certain
 /// predefined constants that affect how the byte code is generated. This
 /// structure represents a small subset of the constants that are relevant for
@@ -21,6 +32,8 @@ pub struct Settings<'a> {
     pub fields_per_flush: u64,
     /// Lua binary file signature (`LUA_SIGNATURE`).
     pub binary_signature: &'a str,
+    /// Lua byte code dialect.
+    pub dialect: Dialect,
     /// Memory layout of instructions inside the Lua byte code (`SIZE_*`,
     /// `POS_*`).
     pub layout: InstructionLayout,
@@ -32,6 +45,7 @@ impl<'a> Default for Settings<'a> {
             stack_limit: 250,
             fields_per_flush: 32,
             binary_signature: "\x1bLua",
+            dialect: Dialect::Standard,
             layout: InstructionLayout::from_specification([
                 OperandType::Opcode(6),
                 OperandType::C(9),

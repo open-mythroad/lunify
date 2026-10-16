@@ -26,15 +26,20 @@ pub fn unify(input_bytes: &[u8], output_format: &Format, settings: &Settings) ->
         return Err(LunifyError::IncorrectSignature);
     }
 
-    let version = byte_stream.byte()?.try_into()?;
+    let version_byte = byte_stream.byte()?;
+    let (version, input_format) = if version_byte == 0x80 && settings.lua50.dialect == lua50::Dialect::Mythroad {
+        (LuaVersion::Lua50, Format::from_mythroad_byte_stream(&mut byte_stream)?)
+    } else {
+        let version = version_byte.try_into()?;
+        let input_format = Format::from_byte_stream(&mut byte_stream, version, settings)?;
+        (version, input_format)
+    };
 
     #[cfg(feature = "debug")]
     {
         println!("\n======== Header ========");
         println!("version: {version}");
     }
-
-    let input_format = Format::from_byte_stream(&mut byte_stream, version, settings)?;
 
     // If the input is already in the correct format, return it as is.
     if input_format == *output_format && !cfg!(test) {
