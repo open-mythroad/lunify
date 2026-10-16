@@ -93,4 +93,8 @@ lua_instructions! {
     SetListO(Bx, true),
     Close(BC<Unused, Unused>, true),
     Closure(Bx, true),
+    BitNot(BC<ConstantRegister, Unused>, true),
+    BitAnd(BC<ConstantRegister, ConstantRegister>, true),
+    BitOr(BC<ConstantRegister, ConstantRegister>, true),
+    BitXor(BC<ConstantRegister, ConstantRegister>, true),
 }
