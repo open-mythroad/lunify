@@ -12,6 +12,12 @@ pub(crate) fn upcast(
     is_variadic: bool,
     settings: &Settings,
 ) -> Result<(Vec<lua51::Instruction>, Vec<i64>), LunifyError> {
+    let stripped = line_info.is_empty();
+    let line_info = if stripped {
+        vec![0; instructions.len()]
+    } else {
+        line_info
+    };
     let mut builder = FunctionBuilder::default();
     let mut constant_manager = ConstantManager { constants };
 
@@ -354,7 +360,11 @@ pub(crate) fn upcast(
         });
     }
 
-    builder.finalize(maximum_stack_size, settings)
+    let (instructions, mut line_info) = builder.finalize(maximum_stack_size, settings)?;
+    if stripped {
+        line_info.clear();
+    }
+    Ok((instructions, line_info))
 }
 
 #[cfg(test)]
@@ -609,6 +619,19 @@ mod tests {
     #[test]
     fn upcast_set_list_large() -> Result<(), LunifyError> {
         set_list_test(20)
+    }
+
+    #[test]
+    fn upcast_stripped_chunk() -> Result<(), LunifyError> {
+        let settings = test_settings();
+        let input = vec![lua50::Instruction::LoadK { a: 0, mode: Bx(0) }];
+        let expected = vec![lua51::Instruction::LoadK { a: 0, mode: Bx(0) }];
+
+        let (instructions, line_info) = upcast(input, Vec::new(), &mut Vec::new(), &mut 2, 0, false, &settings)?;
+
+        assert_eq!(instructions, expected);
+        assert!(line_info.is_empty());
+        Ok(())
     }
 
     #[test]

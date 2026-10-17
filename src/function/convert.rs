@@ -14,6 +14,12 @@ pub(crate) fn convert(
         return Ok((instructions, line_info));
     }
 
+    let stripped = line_info.is_empty();
+    let line_info = if stripped {
+        vec![0; instructions.len()]
+    } else {
+        line_info
+    };
     let mut builder = FunctionBuilder::default();
 
     for (instruction, line_number) in instructions.into_iter().zip(line_info) {
@@ -104,7 +110,11 @@ pub(crate) fn convert(
         };
     }
 
-    builder.finalize(maximum_stack_size, settings)
+    let (instructions, mut line_info) = builder.finalize(maximum_stack_size, settings)?;
+    if stripped {
+        line_info.clear();
+    }
+    Ok((instructions, line_info))
 }
 
 #[cfg(test)]
@@ -212,6 +222,18 @@ mod tests {
     #[test]
     fn convert_set_list_large() -> Result<(), LunifyError> {
         set_list_test(20)
+    }
+
+    #[test]
+    fn convert_stripped_chunk() -> Result<(), LunifyError> {
+        let settings = test_settings();
+        let expected = vec![lua51::Instruction::LoadK { a: 0, mode: Bx(0) }];
+
+        let (instructions, line_info) = convert(expected.clone(), Vec::new(), &mut 2, &settings)?;
+
+        assert_eq!(instructions, expected);
+        assert!(line_info.is_empty());
+        Ok(())
     }
 
     #[test]
