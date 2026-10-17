@@ -13,6 +13,12 @@ pub(crate) fn upcast(
     is_variadic: bool,
     settings: &Settings,
 ) -> Result<(Vec<lua51::Instruction>, Vec<i64>), LunifyError> {
+    let stripped = line_info.is_empty();
+    let line_info = if stripped {
+        vec![0; instructions.len()]
+    } else {
+        line_info
+    };
     let mut builder = FunctionBuilder::default();
     let mut constant_manager = ConstantManager { constants };
 
@@ -561,7 +567,11 @@ pub(crate) fn upcast(
         });
     }
 
-    builder.finalize(maximum_stack_size, settings)
+    let (instructions, mut line_info) = builder.finalize(maximum_stack_size, settings)?;
+    if stripped {
+        line_info.clear();
+    }
+    Ok((instructions, line_info))
 }
 
 #[cfg(test)]

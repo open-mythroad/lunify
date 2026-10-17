@@ -14,6 +14,12 @@ pub(crate) fn convert(
         return Ok((instructions, line_info));
     }
 
+    let stripped = line_info.is_empty();
+    let line_info = if stripped {
+        vec![0; instructions.len()]
+    } else {
+        line_info
+    };
     let mut builder = FunctionBuilder::default();
 
     for (instruction, line_number) in instructions.into_iter().zip(line_info) {
@@ -104,7 +110,11 @@ pub(crate) fn convert(
         };
     }
 
-    builder.finalize(maximum_stack_size, settings)
+    let (instructions, mut line_info) = builder.finalize(maximum_stack_size, settings)?;
+    if stripped {
+        line_info.clear();
+    }
+    Ok((instructions, line_info))
 }
 
 #[cfg(test)]
