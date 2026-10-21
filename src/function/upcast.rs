@@ -4,6 +4,71 @@ use super::instruction::{BC, Bx, ConstantRegister, Generic, LuaInstruction, Regi
 use crate::LunifyError;
 use crate::number::Number;
 
+fn load_call_argument(builder: &mut FunctionBuilder, destination: u64, value: ConstantRegister) {
+    let instruction = if value.1 {
+        lua51::Instruction::LoadK {
+            a: destination,
+            mode: Bx(value.0),
+        }
+    } else {
+        lua51::Instruction::Move {
+            a: destination,
+            mode: BC(Register(value.0), Unused),
+        }
+    };
+    builder.extra_instruction(instruction);
+}
+
+fn lower_unary_call(
+    builder: &mut FunctionBuilder,
+    constant_manager: &mut ConstantManager,
+    call_base: u64,
+    destination: u64,
+    value: ConstantRegister,
+    global: &'static str,
+) {
+    let global_constant = constant_manager.constant_for_str(global);
+    builder.instruction(lua51::Instruction::GetGlobal {
+        a: call_base,
+        mode: Bx(global_constant),
+    });
+    load_call_argument(builder, call_base + 1, value);
+    builder.extra_instruction(lua51::Instruction::Call {
+        a: call_base,
+        mode: BC(Generic(2), Generic(2)),
+    });
+    builder.extra_instruction(lua51::Instruction::Move {
+        a: destination,
+        mode: BC(Register(call_base), Unused),
+    });
+}
+
+fn lower_binary_call(
+    builder: &mut FunctionBuilder,
+    constant_manager: &mut ConstantManager,
+    call_base: u64,
+    destination: u64,
+    left: ConstantRegister,
+    right: ConstantRegister,
+    global: &'static str,
+) {
+    let global_constant = constant_manager.constant_for_str(global);
+    builder.instruction(lua51::Instruction::GetGlobal {
+        a: call_base,
+        mode: Bx(global_constant),
+    });
+    load_call_argument(builder, call_base + 1, left);
+    load_call_argument(builder, call_base + 2, right);
+    builder.extra_instruction(lua51::Instruction::Call {
+        a: call_base,
+        mode: BC(Generic(3), Generic(2)),
+    });
+    builder.extra_instruction(lua51::Instruction::Move {
+        a: destination,
+        mode: BC(Register(call_base), Unused),
+    });
+}
+
 pub(crate) fn upcast(
     instructions: Vec<lua50::Instruction>,
     line_info: Vec<i64>,
@@ -37,21 +102,79 @@ pub(crate) fn upcast(
             lua50::Instruction::SetTable { a, mode } => builder.instruction(lua51::Instruction::SetTable { a, mode }),
             lua50::Instruction::NewTable { a, mode } => builder.instruction(lua51::Instruction::NewTable { a, mode }),
             lua50::Instruction::_Self { a, mode } => builder.instruction(lua51::Instruction::_Self { a, mode }),
+            lua50::Instruction::Add { a, mode: BC(left, right) }
+                if settings.lua50.dialect == lua50::Dialect::Mythroad =>
+            {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
+                    a,
+                    left,
+                    right,
+                    "_add",
+                );
+            }
             lua50::Instruction::Add { a, mode } => builder.instruction(lua51::Instruction::Add { a, mode }),
+            lua50::Instruction::Subtract { a, mode: BC(left, right) }
+                if settings.lua50.dialect == lua50::Dialect::Mythroad =>
+            {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
+                    a,
+                    left,
+                    right,
+                    "_sub",
+                );
+            }
             lua50::Instruction::Subtract { a, mode } => builder.instruction(lua51::Instruction::Subtract { a, mode }),
+            lua50::Instruction::Multiply { a, mode: BC(left, right) }
+                if settings.lua50.dialect == lua50::Dialect::Mythroad =>
+            {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
+                    a,
+                    left,
+                    right,
+                    "_mul",
+                );
+            }
             lua50::Instruction::Multiply { a, mode } => builder.instruction(lua51::Instruction::Multiply { a, mode }),
+            lua50::Instruction::Divide { a, mode: BC(left, right) }
+                if settings.lua50.dialect == lua50::Dialect::Mythroad =>
+            {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
+                    a,
+                    left,
+                    right,
+                    "_div",
+                );
+            }
             lua50::Instruction::Divide { a, mode } => builder.instruction(lua51::Instruction::Divide { a, mode }),
             lua50::Instruction::Power { a, mode } => builder.instruction(lua51::Instruction::Power { a, mode }),
+            lua50::Instruction::Unary { a, mode: BC(value, _) }
+                if settings.lua50.dialect == lua50::Dialect::Mythroad =>
+            {
+                lower_unary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
+                    a,
+                    ConstantRegister(value.0, false),
+                    "_neg",
+                );
+            }
             lua50::Instruction::Unary { a, mode } => builder.instruction(lua51::Instruction::Unary { a, mode }),
             lua50::Instruction::Not { a, mode } => builder.instruction(lua51::Instruction::Not { a, mode }),
             lua50::Instruction::BitNot { a, mode: BC(value, _) } => {
-                // Lua 5.1 has no bitwise complement instruction. Mythroad's `_not`
-                // is logical negation, so use the equivalent `_xor(value, -1)`.
-                // Place the function and its arguments after the original stack.
                 let call_base = *maximum_stack_size as u64;
-                let xor_global_constant = constant_manager.constant_for_str("_xor");
-
-                // Add the second argument to the constant table if it is not already there.
                 let minus_one_constant = constant_manager
                     .constants
                     .iter()
@@ -62,193 +185,48 @@ pub(crate) fn upcast(
                         constant_manager.constants.push(Constant::Number(Number::Integer(-1)));
                         index
                     });
-
-                // Load `_xor` into the call base.
-                builder.instruction(lua51::Instruction::GetGlobal {
-                    a: call_base,
-                    mode: Bx(xor_global_constant),
-                });
-
-                // Load RK(B) as the first argument.
-                if value.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 1,
-                        mode: Bx(value.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 1,
-                        mode: BC(Register(value.0), Unused),
-                    });
-                }
-
-                // Load -1 as the second argument.
-                builder.extra_instruction(lua51::Instruction::LoadK {
-                    a: call_base + 2,
-                    mode: Bx(minus_one_constant),
-                });
-
-                // Call `_xor` with two arguments and one result.
-                builder.extra_instruction(lua51::Instruction::Call {
-                    a: call_base,
-                    mode: BC(Generic(3), Generic(2)),
-                });
-
-                // Move the result back to R(A).
-                builder.extra_instruction(lua51::Instruction::Move {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    call_base,
                     a,
-                    mode: BC(Register(call_base), Unused),
-                });
+                    value,
+                    ConstantRegister(minus_one_constant, true),
+                    "_xor",
+                );
             }
             lua50::Instruction::BitAnd { a, mode: BC(left, right) } => {
-                // Lua 5.1 has no bitwise AND instruction, so call Mythroad's
-                // `_and` global using temporary registers after the original stack.
-                let call_base = *maximum_stack_size as u64;
-                let and_global_constant = constant_manager.constant_for_str("_and");
-
-                // Load `_and` into the call base.
-                builder.instruction(lua51::Instruction::GetGlobal {
-                    a: call_base,
-                    mode: Bx(and_global_constant),
-                });
-
-                // Load RK(B) as the first argument.
-                if left.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 1,
-                        mode: Bx(left.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 1,
-                        mode: BC(Register(left.0), Unused),
-                    });
-                }
-
-                // Load RK(C) as the second argument.
-                if right.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 2,
-                        mode: Bx(right.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 2,
-                        mode: BC(Register(right.0), Unused),
-                    });
-                }
-
-                // Call `_and` with two arguments and one result.
-                builder.extra_instruction(lua51::Instruction::Call {
-                    a: call_base,
-                    mode: BC(Generic(3), Generic(2)),
-                });
-
-                // Move the result back to R(A).
-                builder.extra_instruction(lua51::Instruction::Move {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
                     a,
-                    mode: BC(Register(call_base), Unused),
-                });
+                    left,
+                    right,
+                    "_and",
+                );
             }
             lua50::Instruction::BitOr { a, mode: BC(left, right) } => {
-                // Lua 5.1 has no bitwise OR instruction, so call Mythroad's
-                // `_or` global using temporary registers after the original stack.
-                let call_base = *maximum_stack_size as u64;
-                let or_global_constant = constant_manager.constant_for_str("_or");
-
-                // Load `_or` into the call base.
-                builder.instruction(lua51::Instruction::GetGlobal {
-                    a: call_base,
-                    mode: Bx(or_global_constant),
-                });
-
-                // Load RK(B) as the first argument.
-                if left.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 1,
-                        mode: Bx(left.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 1,
-                        mode: BC(Register(left.0), Unused),
-                    });
-                }
-
-                // Load RK(C) as the second argument.
-                if right.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 2,
-                        mode: Bx(right.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 2,
-                        mode: BC(Register(right.0), Unused),
-                    });
-                }
-
-                // Call `_or` with two arguments and one result.
-                builder.extra_instruction(lua51::Instruction::Call {
-                    a: call_base,
-                    mode: BC(Generic(3), Generic(2)),
-                });
-
-                // Move the result back to R(A).
-                builder.extra_instruction(lua51::Instruction::Move {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
                     a,
-                    mode: BC(Register(call_base), Unused),
-                });
+                    left,
+                    right,
+                    "_or",
+                );
             }
             lua50::Instruction::BitXor { a, mode: BC(left, right) } => {
-                // Lua 5.1 has no bitwise XOR instruction, so call Mythroad's
-                // `_xor` global using temporary registers after the original stack.
-                let call_base = *maximum_stack_size as u64;
-                let xor_global_constant = constant_manager.constant_for_str("_xor");
-
-                // Load `_xor` into the call base.
-                builder.instruction(lua51::Instruction::GetGlobal {
-                    a: call_base,
-                    mode: Bx(xor_global_constant),
-                });
-
-                // Load RK(B) as the first argument.
-                if left.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 1,
-                        mode: Bx(left.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 1,
-                        mode: BC(Register(left.0), Unused),
-                    });
-                }
-
-                // Load RK(C) as the second argument.
-                if right.1 {
-                    builder.extra_instruction(lua51::Instruction::LoadK {
-                        a: call_base + 2,
-                        mode: Bx(right.0),
-                    });
-                } else {
-                    builder.extra_instruction(lua51::Instruction::Move {
-                        a: call_base + 2,
-                        mode: BC(Register(right.0), Unused),
-                    });
-                }
-
-                // Call `_xor` with two arguments and one result.
-                builder.extra_instruction(lua51::Instruction::Call {
-                    a: call_base,
-                    mode: BC(Generic(3), Generic(2)),
-                });
-
-                // Move the result back to R(A).
-                builder.extra_instruction(lua51::Instruction::Move {
+                lower_binary_call(
+                    &mut builder,
+                    &mut constant_manager,
+                    *maximum_stack_size as u64,
                     a,
-                    mode: BC(Register(call_base), Unused),
-                });
+                    left,
+                    right,
+                    "_xor",
+                );
             }
             lua50::Instruction::Concatinate { a, mode } => builder.instruction(lua51::Instruction::Concatinate { a, mode }),
             lua50::Instruction::Jump { a, mode } => builder.instruction(lua51::Instruction::Jump { a, mode }),
@@ -575,6 +553,7 @@ mod tests {
     use crate::function::constant::Constant;
     use crate::function::instruction::{ConstantRegister, Generic, Register, SignedBx, Unused};
     use crate::function::upcast;
+    use crate::number::Number;
     use crate::{LunifyError, Settings};
 
     fn test_settings() -> Settings<'static> {
@@ -677,6 +656,79 @@ mod tests {
         }];
 
         assert_eq!(instructions, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn standard_arithmetic_remains_native() -> Result<(), LunifyError> {
+        let settings = test_settings();
+        let mode = BC(ConstantRegister(1, false), ConstantRegister(0, true));
+        let input = vec![lua50::Instruction::Divide { a: 2, mode }];
+
+        let (instructions, _) = upcast(input, vec![0], &mut Vec::new(), &mut 4, 0, false, &settings)?;
+
+        assert_eq!(instructions, vec![lua51::Instruction::Divide { a: 2, mode }]);
+        Ok(())
+    }
+
+    #[test]
+    fn mythroad_arithmetic_calls_integer_helpers() -> Result<(), LunifyError> {
+        let mut settings = test_settings();
+        settings.lua50.dialect = lua50::Dialect::Mythroad;
+        let mut constants = vec![Constant::Number(Number::Integer(13))];
+        let input = vec![
+            lua50::Instruction::Divide {
+                a: 2,
+                mode: BC(ConstantRegister(1, false), ConstantRegister(0, true)),
+            },
+            lua50::Instruction::Unary {
+                a: 3,
+                mode: BC(Register(2), ConstantRegister(0, false)),
+            },
+        ];
+
+        let (instructions, _) = upcast(input, vec![10, 11], &mut constants, &mut 4, 0, false, &settings)?;
+
+        assert_eq!(
+            instructions,
+            vec![
+                lua51::Instruction::GetGlobal { a: 4, mode: Bx(1) },
+                lua51::Instruction::Move {
+                    a: 5,
+                    mode: BC(Register(1), Unused),
+                },
+                lua51::Instruction::LoadK { a: 6, mode: Bx(0) },
+                lua51::Instruction::Call {
+                    a: 4,
+                    mode: BC(Generic(3), Generic(2)),
+                },
+                lua51::Instruction::Move {
+                    a: 2,
+                    mode: BC(Register(4), Unused),
+                },
+                lua51::Instruction::GetGlobal { a: 4, mode: Bx(2) },
+                lua51::Instruction::Move {
+                    a: 5,
+                    mode: BC(Register(2), Unused),
+                },
+                lua51::Instruction::Call {
+                    a: 4,
+                    mode: BC(Generic(2), Generic(2)),
+                },
+                lua51::Instruction::Move {
+                    a: 3,
+                    mode: BC(Register(4), Unused),
+                },
+            ]
+        );
+        assert_eq!(
+            constants,
+            vec![
+                Constant::Number(Number::Integer(13)),
+                Constant::String(b"_div\0".to_vec()),
+                Constant::String(b"_neg\0".to_vec()),
+            ]
+        );
         Ok(())
     }
 
